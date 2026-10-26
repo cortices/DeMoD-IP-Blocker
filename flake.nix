@@ -9,6 +9,8 @@
     nixosModules.default = { config, lib, pkgs, ... }:
       let
         cfg = config.services.demod-ip-blocker;
+
+        urlsArray = builtins.concatStringSep " " (builtins.map (s: ''"${s}"''))
         
         # Define set names
         setV4 = "demod-blk-v4";
@@ -50,7 +52,7 @@
           set -o pipefail
 
           # Configuration
-          URL="${cfg.url}"
+          URLS=( ${urls} )
           STATE_DIR="/var/lib/demod-ip-blocker"
           CACHE_FILE="$STATE_DIR/ips.txt"
           COUNTER_FILE="$STATE_DIR/boot_counter"
@@ -87,20 +89,26 @@
               echo "Boot #$NEXT_BOOT (Probing Boot): Fetching fresh data from API..."
               
               # Download to a temporary location first
-              DOWNLOAD_TMP=$(mktemp)
-              if $CURL -sS --fail --max-time 60 --retry 3 "$URL" -o "$DOWNLOAD_TMP"; then
-                  # Validate: Not empty
-                  if [ -s "$DOWNLOAD_TMP" ]; then
-                      mv "$DOWNLOAD_TMP" "$CACHE_FILE"
-                      echo "Download successful. Cache updated."
-                  else
-                      echo "Warning: Downloaded file was empty. Keeping old cache."
-                      rm -f "$DOWNLOAD_TMP"
-                  fi
-              else
-                  echo "Error: Download failed. Attempting to use existing cache."
-                  rm -f "$DOWNLOAD_TMP"
-              fi
+              DOWNLOAD_TMP=$(mktemp -d)
+              for i in "${!URLS[@]}"; do
+                DL_FILE="$DOWNLOAD_TMP/$i.txt"
+                if $CURL -sS --fail --max-time 60 --retry 3 "$URL" -o "$DL_FILE"; then
+                    # Validate: Not empty
+                    if [ -s "$DL_FILE" ]; then
+                        echo "Download successful -- ${URLS[$i]}"
+                    else
+                        echo "Warning: Downloaded file was empty."
+                        
+                    fi
+                else
+                    echo "Error: Download failed. Attempting to use existing cache."
+                    rm -f "$DOWNLOAD_TMP"
+                fi
+              done
+
+              mv "$DOWNLOAD_TMP" "$CACHE_FILE"
+              rm -f "$DOWNLOAD_TMP"
+
           else
               echo "Boot #$NEXT_BOOT (Cached Boot): Skipping network probe."
           fi
@@ -121,16 +129,18 @@
           RESTORE_FILE_V6="$WORK_DIR/restore_v6.txt"
 
           # --- Prepare IPv4 Set ---
+          echo "Preparing IPv4 set..."
           echo "create $TMP_V4 hash:net family inet hashsize 4096 maxelem 200000 -exist" > "$RESTORE_FILE_V4"
           echo "flush $TMP_V4" >> "$RESTORE_FILE_V4"
-          $GREP -v ":" "$CACHE_FILE" | $GREP "\." | $AWK -v set="$TMP_V4" '{print "add " set " " $1 " -exist"}' >> "$RESTORE_FILE_V4"
+          $GREP -v ":" "$CACHE_FILE" || true | $GREP "\."  || true | $AWK -v set="$TMP_V4" '{print "add " set " " $1 " -exist"}' >> "$RESTORE_FILE_V4"
           echo "swap $TMP_V4 $SET_V4" >> "$RESTORE_FILE_V4"
           echo "destroy $TMP_V4" >> "$RESTORE_FILE_V4"
 
           # --- Prepare IPv6 Set ---
+          echo "Preparing IPv6 set..."
           echo "create $TMP_V6 hash:net family inet6 hashsize 4096 maxelem 200000 -exist" > "$RESTORE_FILE_V6"
           echo "flush $TMP_V6" >> "$RESTORE_FILE_V6"
-          $GREP ":" "$CACHE_FILE" | $AWK -v set="$TMP_V6" '{print "add " set " " $1 " -exist"}' >> "$RESTORE_FILE_V6"
+          $GREP ":" "$CACHE_FILE" || true | $AWK -v set="$TMP_V6" '{print "add " set " " $1 " -exist"}' >> "$RESTORE_FILE_V6"
           echo "swap $TMP_V6 $SET_V6" >> "$RESTORE_FILE_V6"
           echo "destroy $TMP_V6" >> "$RESTORE_FILE_V6"
 
